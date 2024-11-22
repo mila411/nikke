@@ -9,9 +9,7 @@ impl TransactionManager {
 
     pub fn begin(&self) {}
 
-    // トランザクションのコミット
     pub fn commit(&self) {}
 
-    // トランザクションのロールバック
     pub fn rollback(&self) {}
 }

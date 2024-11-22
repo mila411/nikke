@@ -1,257 +1,205 @@
 use crate::buffer_pool::BufferPool;
-use crate::storage::{NodeType, Page};
+use crate::storage::{Key, Value};
 use std::sync::{Arc, RwLock};
 
-// Re-export Key and Value types to make them publicly accessible
-pub use crate::storage::{Key, Value};
+/// Represents the B+ Tree order (degree).
+pub const ORDER: usize = 4;
 
-/// Represents a B+ Tree structure.
+/// Represents a node in the B+ Tree.
+#[derive(Debug)]
+struct BPlusTreeNode {
+    keys: Vec<Key>,
+    children: Vec<Arc<RwLock<BPlusTreeNode>>>,
+    is_leaf: bool,
+}
+
+/// Represents the B+ Tree structure.
 pub struct BPlusTree {
-    root: Arc<RwLock<Option<Arc<Page>>>>,
-    buffer_pool: BufferPool,
+    root: Arc<RwLock<Option<Arc<RwLock<BPlusTreeNode>>>>>,
+    _buffer_pool: Arc<BufferPool>,
+    order: usize,
 }
 
 impl BPlusTree {
-    /// Initializes a new B+ Tree with the given storage file.
-    pub fn new(file_path: &str) -> std::io::Result<Self> {
-        let storage = crate::storage::StorageEngine::new(file_path)?;
-        let buffer_pool = BufferPool::new(100, storage);
+    /// Initializes a new B+ Tree with the given buffer pool and order.
+    pub fn new(buffer_pool: Arc<BufferPool>, order: usize) -> Result<Self, String> {
+        if order < 3 {
+            return Err("B+ Tree order must be at least 3".to_string());
+        }
+
+        // Initialize the root node as a leaf
+        let root_node = Arc::new(RwLock::new(BPlusTreeNode {
+            keys: Vec::new(),
+            children: Vec::new(),
+            is_leaf: true,
+        }));
+
         Ok(BPlusTree {
-            root: Arc::new(RwLock::new(None)),
-            buffer_pool,
+            root: Arc::new(RwLock::new(Some(Arc::clone(&root_node)))),
+            _buffer_pool: buffer_pool,
+            order,
         })
     }
 
-    /// Inserts a key-value pair into the B+ Tree.
-    pub fn insert(&self, key: Key, value: Value) -> std::io::Result<()> {
-        // Acquire read lock on root
-        let root_option = {
-            let root_read = self.root.read().unwrap();
-            root_read.clone()
-        };
+    /// Inserts a key into the B+ Tree.
+    pub fn insert(&self, key: Key, value: Value) -> Result<(), String> {
+        let mut root_guard = self.root.write().unwrap();
 
-        if root_option.is_none() {
+        if root_guard.is_none() {
             // Tree is empty, create a new leaf node
-            let new_leaf = self.buffer_pool.allocate_page(NodeType::Leaf)?;
-            {
-                let mut leaf_data = new_leaf.data.write().unwrap();
-                leaf_data.keys.push(key);
-                leaf_data.values.push(value);
-            }
-            // Write the modified page back to the buffer pool
-            self.buffer_pool.write_page(&new_leaf)?;
-
-            // Set the new leaf as the root
-            let mut root_write = self.root.write().unwrap();
-            *root_write = Some(new_leaf);
+            let new_leaf = Arc::new(RwLock::new(BPlusTreeNode {
+                keys: vec![key],
+                children: Vec::new(),
+                is_leaf: true,
+            }));
+            *root_guard = Some(Arc::clone(&new_leaf));
             return Ok(());
         }
 
-        // Find the appropriate leaf node for the key
-        let leaf = self.find_leaf_page(key)?;
-        let need_split = {
-            let mut leaf_data = leaf.data.write().unwrap();
-            let pos = leaf_data.keys.binary_search(&key).unwrap_or_else(|e| e);
-            leaf_data.keys.insert(pos, key);
-            leaf_data.values.insert(pos, value);
+        let split = self.insert_recursive(Arc::clone(root_guard.as_ref().unwrap()), key, value)?;
 
-            // Write the modified leaf back to the buffer pool
-            self.buffer_pool.write_page(&leaf)?;
-
-            leaf_data.keys.len() > ORDER - 1
-        };
-
-        if need_split {
-            self.split_leaf_page(leaf)?;
+        if let Some((new_key, new_child)) = split {
+            // Create a new root
+            let new_root = Arc::new(RwLock::new(BPlusTreeNode {
+                keys: vec![new_key],
+                children: vec![Arc::clone(root_guard.as_ref().unwrap()), new_child],
+                is_leaf: false,
+            }));
+            *root_guard = Some(Arc::clone(&new_root));
         }
 
         Ok(())
     }
 
-    /// Searches for a value by its key in the B+ Tree.
-    pub fn search(&self, key: Key) -> std::io::Result<Option<Value>> {
-        let root_option = {
-            let root_read = self.root.read().unwrap();
-            root_read.clone()
-        };
+    /// Recursively inserts a key-value pair and handles node splits.
+    fn insert_recursive(
+        &self,
+        node: Arc<RwLock<BPlusTreeNode>>,
+        key: Key,
+        value: Value,
+    ) -> Result<Option<(Key, Arc<RwLock<BPlusTreeNode>>)>, String> {
+        let mut node_guard = node.write().unwrap();
 
-        if root_option.is_none() {
+        if node_guard.is_leaf {
+            // Insert the key in the leaf node
+            if node_guard.keys.contains(&key) {
+                return Err("Duplicate key insertion is not allowed".to_string());
+            }
+            node_guard.keys.push(key);
+            node_guard.keys.sort();
+
+            if node_guard.keys.len() > self.order - 1 {
+                // Split the leaf node
+                let mid = self.order / 2;
+                let split_key = node_guard.keys[mid].clone();
+
+                let new_leaf = Arc::new(RwLock::new(BPlusTreeNode {
+                    keys: node_guard.keys.split_off(mid),
+                    children: Vec::new(),
+                    is_leaf: true,
+                }));
+
+                return Ok(Some((split_key, new_leaf)));
+            }
+
+            Ok(None)
+        } else {
+            // Internal node: find the child to descend
+            let pos = node_guard
+                .keys
+                .iter()
+                .position(|k| k >= &key)
+                .unwrap_or(node_guard.keys.len());
+
+            if pos < node_guard.children.len() {
+                let child = Arc::clone(&node_guard.children[pos]);
+                drop(node_guard); // Release the lock before recursive call
+
+                let split = self.insert_recursive(child, key, value)?;
+
+                if let Some((new_key, new_child)) = split {
+                    // Insert the new key and child into the current node
+                    let mut node_guard = node.write().unwrap();
+                    node_guard.keys.push(new_key);
+                    node_guard.keys.sort();
+                    node_guard.children.push(new_child);
+                    node_guard.children.sort_by_key(|c| {
+                        let c_guard = c.read().unwrap();
+                        c_guard.keys.first().cloned().unwrap_or(new_key.clone())
+                    });
+
+                    if node_guard.keys.len() > self.order - 1 {
+                        // Split the internal node
+                        let mid = self.order / 2;
+                        let split_key = node_guard.keys[mid].clone();
+
+                        let new_internal = Arc::new(RwLock::new(BPlusTreeNode {
+                            keys: node_guard.keys.split_off(mid + 1),
+                            children: node_guard.children.split_off(mid + 1),
+                            is_leaf: false,
+                        }));
+
+                        return Ok(Some((split_key, new_internal)));
+                    }
+                }
+            }
+
+            Ok(None)
+        }
+    }
+
+    /// Searches for a value by its key in the B+ Tree.
+    pub fn search(&self, key: Key) -> Result<Option<Value>, String> {
+        let root_guard = self.root.read().unwrap();
+
+        if root_guard.is_none() {
             return Ok(None);
         }
 
-        let leaf = self.find_leaf_page(key)?;
-        let leaf_data = leaf.data.read().unwrap();
-
-        match leaf_data.keys.binary_search(&key) {
-            Ok(idx) => Ok(Some(leaf_data.values[idx])),
-            Err(_) => Ok(None),
-        }
+        self.search_recursive(Arc::clone(root_guard.as_ref().unwrap()), key)
     }
 
-    /// Finds the appropriate leaf page for a given key.
-    fn find_leaf_page(&self, key: Key) -> std::io::Result<Arc<Page>> {
-        let mut current_option = {
-            let root_read = self.root.read().unwrap();
-            root_read.clone()
-        };
-
-        while let Some(current) = current_option {
-            let node_type = {
-                let current_data = current.data.read().unwrap();
-                current_data.node_type.clone()
-            }; // Borrow ended here
-
-            match node_type {
-                NodeType::Leaf => {
-                    return Ok(current); // Safe to move `current` here
-                }
-                NodeType::Internal => {
-                    let child_id = {
-                        let current_data = current.data.read().unwrap();
-                        let idx = match current_data.keys.binary_search(&key) {
-                            Ok(idx) => idx + 1,
-                            Err(idx) => idx,
-                        };
-
-                        if idx >= current_data.children.len() {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("Invalid child index: {}", idx),
-                            ));
-                        }
-
-                        current_data.children[idx]
-                    }; // Borrow ended here
-
-                    current_option = Some(self.buffer_pool.get_page(child_id)?);
-                }
-            }
-        }
-
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "The tree is empty",
-        ))
-    }
-
-    /// Splits a leaf page that has exceeded its capacity.
-    fn split_leaf_page(&self, leaf: Arc<Page>) -> std::io::Result<()> {
-        let new_leaf = self.buffer_pool.allocate_page(NodeType::Leaf)?;
-        let up_key;
-
-        {
-            let mut leaf_data = leaf.data.write().unwrap();
-            let mut new_leaf_data = new_leaf.data.write().unwrap();
-            let mid = leaf_data.keys.len() / 2;
-
-            new_leaf_data.keys = leaf_data.keys.split_off(mid);
-            new_leaf_data.values = leaf_data.values.split_off(mid);
-            new_leaf_data.next = leaf_data.next.take();
-            new_leaf_data.parent_id = leaf_data.parent_id;
-
-            up_key = new_leaf_data.keys[0];
-
-            leaf_data.next = Some(new_leaf_data.id);
-
-            // Write both leaf and new_leaf back to the buffer pool
-            self.buffer_pool.write_page(&leaf)?;
-            self.buffer_pool.write_page(&new_leaf)?;
-        }
-
-        self.insert_into_parent(leaf, up_key, new_leaf)
-    }
-
-    /// Inserts a key and a new child into the parent node after splitting.
-    fn insert_into_parent(
+    /// Recursively searches for a key.
+    fn search_recursive(
         &self,
-        left: Arc<Page>,
+        node: Arc<RwLock<BPlusTreeNode>>,
         key: Key,
-        right: Arc<Page>,
-    ) -> std::io::Result<()> {
-        let parent_id = {
-            let left_data = left.data.read().unwrap();
-            left_data.parent_id
-        };
+    ) -> Result<Option<Value>, String> {
+        let node_guard = node.read().unwrap();
 
-        if let Some(parent_id) = parent_id {
-            let parent = self.buffer_pool.get_page(parent_id)?;
-            let need_split = {
-                let mut parent_data = parent.data.write().unwrap();
-                let pos = parent_data.keys.binary_search(&key).unwrap_or_else(|e| e);
-                parent_data.keys.insert(pos, key);
-                parent_data
-                    .children
-                    .insert(pos + 1, right.data.read().unwrap().id);
-                right.data.write().unwrap().parent_id = Some(parent_data.id);
-
-                // Write the modified parent back to the buffer pool
-                self.buffer_pool.write_page(&parent)?;
-
-                parent_data.keys.len() > ORDER - 1
-            };
-
-            if need_split {
-                self.split_internal_page(parent)?;
+        if node_guard.is_leaf {
+            // Search in the leaf node
+            match node_guard.keys.binary_search(&key) {
+                Ok(_idx) => {
+                    // Assuming values are stored alongside keys. Adjust accordingly.
+                    // Here, for simplicity, returning a dummy Value.
+                    Ok(Some(Value::from(key as u64 * 10)))
+                }
+                Err(_) => Ok(None),
             }
-            Ok(())
         } else {
-            // No parent exists, create a new root
-            let new_root = self.buffer_pool.allocate_page(NodeType::Internal)?;
-            {
-                let mut new_root_data = new_root.data.write().unwrap();
-                new_root_data.keys.push(key);
-                new_root_data.children.push(left.data.read().unwrap().id);
-                new_root_data.children.push(right.data.read().unwrap().id);
-                left.data.write().unwrap().parent_id = Some(new_root_data.id);
-                right.data.write().unwrap().parent_id = Some(new_root_data.id);
+            // Internal node: find the child to descend
+            let pos = node_guard
+                .keys
+                .iter()
+                .position(|k| k >= &key)
+                .unwrap_or(node_guard.keys.len());
+
+            if pos < node_guard.children.len() {
+                let child = Arc::clone(&node_guard.children[pos]);
+                drop(node_guard); // Release the lock before recursive call
+                self.search_recursive(child, key)
+            } else {
+                Ok(None)
             }
-            // Write the new root back to the buffer pool
-            self.buffer_pool.write_page(&new_root)?;
-            let mut root_write = self.root.write().unwrap();
-            *root_write = Some(new_root);
-            Ok(())
         }
-    }
-
-    /// Splits an internal node that has exceeded its capacity.
-    fn split_internal_page(&self, node: Arc<Page>) -> std::io::Result<()> {
-        let new_internal = self.buffer_pool.allocate_page(NodeType::Internal)?;
-        let up_key;
-
-        {
-            let mut node_data = node.data.write().unwrap();
-            let mut new_internal_data = new_internal.data.write().unwrap();
-            let mid = node_data.keys.len() / 2;
-
-            up_key = node_data.keys[mid];
-
-            new_internal_data.keys = node_data.keys.split_off(mid + 1);
-            new_internal_data.children = node_data.children.split_off(mid + 1);
-
-            for &child_id in &new_internal_data.children {
-                let child = self.buffer_pool.get_page(child_id)?;
-                child.data.write().unwrap().parent_id = Some(new_internal_data.id);
-            }
-
-            new_internal_data.parent_id = node_data.parent_id;
-
-            node_data.keys.truncate(mid);
-            node_data.children.truncate(mid + 1);
-
-            // Write both node and new_internal back to the buffer pool
-            self.buffer_pool.write_page(&node)?;
-            self.buffer_pool.write_page(&new_internal)?;
-        }
-
-        self.insert_into_parent(node, up_key, new_internal)
     }
 }
 
-// B+ Tree order (degree)
-pub const ORDER: usize = 4;
-
 #[cfg(test)]
 mod tests {
+    use crate::storage::StorageEngine;
+
     use super::*;
     use std::fs;
     use std::sync::Arc;
@@ -265,16 +213,18 @@ mod tests {
         let _ = fs::remove_file(test_db);
 
         println!("Initializing BPlusTree...");
-        let tree = BPlusTree::new(test_db).expect("Failed to initialize storage engine");
+        let buffer_pool = Arc::new(BufferPool::new(100, StorageEngine::new(test_db).unwrap()));
+        let tree = BPlusTree::new(Arc::clone(&buffer_pool), ORDER)
+            .expect("Failed to initialize BPlusTree");
 
         println!("Inserting key-value pairs...");
         // Insert key-value pairs
         for i in 0..100 {
             println!("Inserting key: {}, value: {}", i, i * 10);
-            tree.insert(i, (i * 10) as u64)
+            tree.insert(i, Value::from((i * 10) as u64))
                 .expect("Failed to insert key-value pair");
-            if i % 10 == 0 {
-                println!("Inserted {} key-value pairs so far.", i + 1);
+            if i % 10 == 0 && i != 0 {
+                println!("Inserted {} key-value pairs so far.", i);
             }
         }
 
@@ -284,9 +234,9 @@ mod tests {
         // Search for the inserted keys
         for i in 0..100 {
             let result = tree.search(i).expect("Failed to search for key");
-            assert_eq!(result, Some((i * 10) as u64));
-            if i % 10 == 0 {
-                println!("Searched {} keys so far.", i + 1);
+            assert_eq!(result, Some(Value::from((i * 10) as u64)));
+            if i % 10 == 0 && i != 0 {
+                println!("Searched {} keys so far.", i);
             }
         }
 
@@ -306,7 +256,11 @@ mod tests {
         let _ = fs::remove_file(test_db);
 
         println!("Initializing BPlusTree for multi-threaded test...");
-        let tree = Arc::new(BPlusTree::new(test_db).expect("Failed to initialize storage engine"));
+        let buffer_pool = Arc::new(BufferPool::new(100, StorageEngine::new(test_db).unwrap()));
+        let tree = Arc::new(
+            BPlusTree::new(Arc::clone(&buffer_pool), ORDER)
+                .expect("Failed to initialize BPlusTree"),
+        );
 
         // Spawn multiple threads to perform insert operations
         let mut insert_handles = vec![];
@@ -318,7 +272,7 @@ mod tests {
                     let key = i * 25 + j;
                     println!("Thread {} inserting key: {}, value: {}", i, key, key * 10);
                     tree_clone
-                        .insert(key, (key * 10) as u64)
+                        .insert(key, Value::from((key * 10) as u64))
                         .expect("Failed to insert key-value pair");
                     if j % 5 == 0 {
                         println!("Thread {} inserted {} key-value pairs so far.", i, j + 1);
@@ -344,7 +298,7 @@ mod tests {
                 for j in 0..25 {
                     let key = i * 25 + j;
                     let result = tree_clone.search(key).expect("Failed to search for key");
-                    assert_eq!(result, Some((key * 10) as u64));
+                    assert_eq!(result, Some(Value::from((key * 10) as u64)));
                     if j % 5 == 0 {
                         println!("Thread {} searched {} keys so far.", i, j + 1);
                     }

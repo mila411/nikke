@@ -1,34 +1,40 @@
-// A file for preparing for the future. I hope you can get this far.
-
-// AST Node Definition
-pub enum ASTNode {
-    Statement(Statement),
+#[derive(Debug)]
+pub enum Value {
+    Integer(i64),
+    Float(f64),
+    Text(String),
+    Boolean(bool),
+    Null,
+    Date(String),
+    Time(String),
 }
 
-// Enumeration of SQL statements
-pub enum Statement {
-    CreateTable {
-        name: String,
-        columns: Vec<ColumnDefinition>,
-    },
-    Insert {
-        table: String,
-        values: Vec<String>,
-    },
-    Select {
-        table: String,
-        columns: Vec<String>,
-    },
+#[derive(Debug)]
+pub enum Expression {
+    Equals(String, Value),
+    NotEquals(String, Value),
+    GreaterThan(String, Value),
+    LessThan(String, Value),
 }
 
-// Column definition
-pub struct ColumnDefinition {
-    pub name: String,
-    pub data_type: DataType,
+#[derive(Debug)]
+pub enum Query {
+    Select(Select),
+    Insert(Insert),
+    // Add future query types
 }
 
-// Data type enumeration
-pub enum DataType {
-    Integer,
-    Varchar,
+#[derive(Debug)]
+pub struct Select {
+    pub columns: Vec<String>,
+    pub table: String,
+    pub where_clause: Option<Expression>,
+    // Add other fields (e.g. ORDER BY, GROUP BY)
+}
+
+#[derive(Debug)]
+pub struct Insert {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub values: Vec<Value>,
 }

@@ -62,7 +62,7 @@ impl BufferPool {
         );
         let page_data = {
             // Unified lock acquisition order: lock storage after locking pool_and_lru
-            let mut pool_lru = self.pool_and_lru.lock().unwrap();
+            let _pool_lru = self.pool_and_lru.lock().unwrap();
             let mut storage_lock = self.storage.lock().unwrap();
             storage_lock.read_page(page_id)?
         };
