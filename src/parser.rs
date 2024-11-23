@@ -1,8 +1,7 @@
 // src/parser.rs
 
-use crate::ast::{Insert, Query, Value};
+use crate::ast::{Expression, Insert, Query, Select, Value};
 
-// Define the Token enum representing different types of tokens
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Keyword(String),
@@ -16,12 +15,23 @@ pub enum Token {
     Time(String),
     Timestamp(String),
     Interval(String),
+    Star,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    And,
+    Or,
+    Not,
     LeftParen,
     RightParen,
     Comma,
     SemiColon,
     Whitespace(String),
-    // Add other tokens as needed
+    Illegal(String), // For invalid tokens
+                     // Add other tokens as needed
 }
 
 // Lexer struct responsible for tokenizing the input string
@@ -58,6 +68,15 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Peeks at the next character without consuming it.
+    fn peek_char(&self) -> Option<char> {
+        if self.read_position >= self.input.len() {
+            None
+        } else {
+            self.input[self.read_position..].chars().next()
+        }
+    }
+
     /// Skips over any whitespace characters.
     fn skip_whitespace(&mut self) {
         while let Some(c) = self.ch {
@@ -83,30 +102,99 @@ impl<'a> Lexer<'a> {
         literal
     }
 
-    /// Reads a numeric literal (integer or float).
+    /// Reads a numeric literal (integer, float, hexadecimal, or octal).
     fn read_number(&mut self) -> Token {
+        if let Some('0') = self.ch {
+            // Possible hexadecimal or octal
+            if let Some(next_ch) = self.peek_char() {
+                if next_ch == 'x' || next_ch == 'X' {
+                    // Hexadecimal
+                    self.read_char(); // Consume '0'
+                    self.read_char(); // Consume 'x' or 'X'
+                    return self.read_hex_number();
+                } else if next_ch == 'o' || next_ch == 'O' {
+                    // Octal
+                    self.read_char(); // Consume '0'
+                    self.read_char(); // Consume 'o' or 'O'
+                    return self.read_octal_number();
+                }
+            }
+        }
+
+        // Existing number parsing (integer or float)
         let mut number = String::new();
+        let mut has_decimal_point = false;
         while let Some(c) = self.ch {
-            if !c.is_ascii_digit() && c != '.' {
+            if c == '.' {
+                if has_decimal_point {
+                    break; // Second decimal point encountered
+                }
+                has_decimal_point = true;
+                number.push(c);
+            } else if c == 'e' || c == 'E' {
+                number.push(c);
+                self.read_char();
+                if let Some(next_c) = self.ch {
+                    if next_c == '+' || next_c == '-' {
+                        number.push(next_c);
+                        self.read_char();
+                    }
+                }
+                continue;
+            } else if c.is_ascii_digit() {
+                number.push(c);
+            } else {
                 break;
             }
-            number.push(c);
             self.read_char();
         }
-        if number.contains('.') {
+
+        if has_decimal_point || number.contains('e') || number.contains('E') {
             if let Ok(f) = number.parse::<f64>() {
                 Token::Float(f)
             } else {
-                // Handle parse error if needed
-                Token::Float(0.0)
+                Token::Illegal(number)
             }
         } else {
             if let Ok(i) = number.parse::<i64>() {
                 Token::Integer(i)
             } else {
-                // Handle parse error if needed
-                Token::Integer(0)
+                Token::Illegal(number)
             }
+        }
+    }
+
+    /// Reads a hexadecimal number.
+    fn read_hex_number(&mut self) -> Token {
+        let mut number = String::new();
+        while let Some(c) = self.ch {
+            if !c.is_digit(16) {
+                break;
+            }
+            number.push(c);
+            self.read_char();
+        }
+        if let Ok(i) = i64::from_str_radix(&number, 16) {
+            Token::Integer(i)
+        } else {
+            Token::Illegal(format!("0x{}", number))
+        }
+    }
+
+    /// Reads an octal number.
+    fn read_octal_number(&mut self) -> Token {
+        let mut number = String::new();
+        while let Some(c) = self.ch {
+            if c < '0' || c > '7' {
+                break;
+            }
+            number.push(c);
+            self.read_char();
+        }
+        if let Ok(i) = i64::from_str_radix(&number, 8) {
+            Token::Integer(i)
+        } else {
+            Token::Illegal(format!("0o{}", number))
         }
     }
 
@@ -120,22 +208,12 @@ impl<'a> Lexer<'a> {
             ident.push(c);
             self.read_char();
         }
-        if Self::is_keyword(&ident) {
-            match ident.to_uppercase().as_str() {
-                "INSERT" => Token::Keyword(ident.to_uppercase()),
-                "INTO" => Token::Keyword(ident.to_uppercase()),
-                "VALUES" => Token::Keyword(ident.to_uppercase()),
-                "NULL" => Token::Null,
-                "TRUE" => Token::Boolean(true),
-                "FALSE" => Token::Boolean(false),
-                "DATE" => Token::Keyword(ident.to_uppercase()),
-                "TIME" => Token::Keyword(ident.to_uppercase()),
-                "TIMESTAMP" => Token::Keyword(ident.to_uppercase()),
-                "INTERVAL" => Token::Keyword(ident.to_uppercase()),
-                _ => Token::Keyword(ident.to_uppercase()),
+        match ident.to_uppercase().as_str() {
+            "INSERT" | "INTO" | "VALUES" | "SELECT" | "FROM" | "WHERE" | "AND" | "OR" | "NOT"
+            | "DATE" | "TIME" | "TIMESTAMP" | "INTERVAL" | "NULL" | "TRUE" | "FALSE" => {
+                Token::Keyword(ident.to_uppercase())
             }
-        } else {
-            Token::Identifier(ident)
+            _ => Token::Identifier(ident),
         }
     }
 
@@ -147,23 +225,6 @@ impl<'a> Lexer<'a> {
     /// Checks if a character can be part of an identifier.
     fn is_identifier_part(c: char) -> bool {
         c.is_alphanumeric() || c == '_'
-    }
-
-    /// Checks if a string is a SQL keyword.
-    fn is_keyword(ident: &str) -> bool {
-        matches!(
-            ident.to_uppercase().as_str(),
-            "INSERT"
-                | "INTO"
-                | "VALUES"
-                | "DATE"
-                | "TIME"
-                | "TIMESTAMP"
-                | "INTERVAL"
-                | "NULL"
-                | "TRUE"
-                | "FALSE"
-        )
     }
 
     /// Returns the next token from the input.
@@ -187,13 +248,49 @@ impl<'a> Lexer<'a> {
                 self.read_char();
                 Token::SemiColon
             }
+            Some('*') => {
+                self.read_char();
+                Token::Star
+            }
+            Some('=') => {
+                self.read_char();
+                Token::Equal
+            }
+            Some('!') => {
+                self.read_char();
+                if let Some('=') = self.ch {
+                    self.read_char();
+                    Token::NotEqual
+                } else {
+                    Token::Not
+                }
+            }
+            Some('<') => {
+                self.read_char();
+                if let Some('=') = self.ch {
+                    self.read_char();
+                    Token::LessThanOrEqual
+                } else {
+                    Token::LessThan
+                }
+            }
+            Some('>') => {
+                self.read_char();
+                if let Some('=') = self.ch {
+                    self.read_char();
+                    Token::GreaterThanOrEqual
+                } else {
+                    Token::GreaterThan
+                }
+            }
             Some('\'') => Token::StringLiteral(self.read_string_literal()),
             Some(c) if c.is_ascii_digit() => self.read_number(),
             Some(c) if Self::is_identifier_start(c) => self.read_identifier_or_keyword(),
             Some(_) => {
                 // Handle unknown characters
+                let illegal_char = self.ch.unwrap();
                 self.read_char();
-                return None;
+                Token::Illegal(illegal_char.to_string())
             }
             None => {
                 // End of input
@@ -260,6 +357,9 @@ impl<'a> Parser<'a> {
             Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INSERT") => {
                 self.parse_insert()
             }
+            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("SELECT") => {
+                self.parse_select()
+            }
             _ => Err("Unsupported query type.".to_string()),
         }
     }
@@ -302,14 +402,11 @@ impl<'a> Parser<'a> {
 
             if self.match_token(&Token::Comma) {
                 continue;
-            } else {
+            } else if self.match_token(&Token::RightParen) {
                 break;
+            } else {
+                return Err("Expected ',' or ')'.".to_string());
             }
-        }
-
-        // Consume ')'
-        if !self.match_token(&Token::RightParen) {
-            return Err("Expected ')'.".to_string());
         }
 
         // Consume 'VALUES'
@@ -327,65 +424,7 @@ impl<'a> Parser<'a> {
         loop {
             self.consume_whitespace_and_comments();
 
-            let value = match self.current_token.clone() {
-                Some(Token::Integer(i)) => {
-                    self.next_token();
-                    Value::Integer(i)
-                }
-                Some(Token::Float(f)) => {
-                    self.next_token();
-                    Value::Float(f)
-                }
-                Some(Token::StringLiteral(s)) => {
-                    self.next_token();
-                    Value::Text(s)
-                }
-                Some(Token::Null) => {
-                    self.next_token();
-                    Value::Null
-                }
-                Some(Token::Boolean(b)) => {
-                    self.next_token();
-                    Value::Boolean(b)
-                }
-                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("DATE") => {
-                    self.next_token();
-                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                        self.next_token();
-                        Value::Date(s)
-                    } else {
-                        return Err("Failed to parse 'DATE' literal.".to_string());
-                    }
-                }
-                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIME") => {
-                    self.next_token();
-                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                        self.next_token();
-                        Value::Time(s)
-                    } else {
-                        return Err("Failed to parse 'TIME' literal.".to_string());
-                    }
-                }
-                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIMESTAMP") => {
-                    self.next_token();
-                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                        self.next_token();
-                        Value::Timestamp(s)
-                    } else {
-                        return Err("Failed to parse 'TIMESTAMP' literal.".to_string());
-                    }
-                }
-                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INTERVAL") => {
-                    self.next_token();
-                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                        self.next_token();
-                        Value::Interval(s)
-                    } else {
-                        return Err("Failed to parse 'INTERVAL' literal.".to_string());
-                    }
-                }
-                _ => return Err("Failed to parse value.".to_string()),
-            };
+            let value = self.parse_value()?;
 
             values.push(value);
 
@@ -393,14 +432,11 @@ impl<'a> Parser<'a> {
 
             if self.match_token(&Token::Comma) {
                 continue;
-            } else {
+            } else if self.match_token(&Token::RightParen) {
                 break;
+            } else {
+                return Err("Expected ',' or ')'.".to_string());
             }
-        }
-
-        // Consume ')'
-        if !self.match_token(&Token::RightParen) {
-            return Err("Expected ')'.".to_string());
         }
 
         // Consume optional ';'
@@ -411,6 +447,179 @@ impl<'a> Parser<'a> {
             columns,
             values,
         }))
+    }
+
+    /// Parses a SELECT statement.
+    fn parse_select(&mut self) -> Result<Query, String> {
+        // Consume 'SELECT'
+        if !self.match_keyword("SELECT") {
+            return Err("Expected 'SELECT' keyword.".to_string());
+        }
+
+        // Parse column list
+        let mut columns = Vec::new();
+        loop {
+            match &self.current_token {
+                Some(Token::Star) => {
+                    columns.push("*".to_string());
+                    self.next_token();
+                }
+                Some(Token::Identifier(ident)) => {
+                    columns.push(ident.clone());
+                    self.next_token();
+                }
+                _ => return Err("Expected '*' or column name.".to_string()),
+            }
+
+            if self.match_token(&Token::Comma) {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        // Consume 'FROM'
+        if !self.match_keyword("FROM") {
+            return Err("Expected 'FROM' keyword.".to_string());
+        }
+
+        // Parse table name
+        let table = if let Some(Token::Identifier(ref name)) = self.current_token {
+            let table_name = name.clone();
+            self.next_token();
+            table_name
+        } else {
+            return Err("Expected table name.".to_string());
+        };
+
+        // Optional 'WHERE' clause
+        let where_clause = if self.match_keyword("WHERE") {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Consume optional ';'
+        self.match_token(&Token::SemiColon);
+
+        Ok(Query::Select(Select {
+            columns,
+            table,
+            where_clause,
+        }))
+    }
+
+    /// Parses an expression for the WHERE clause.
+    fn parse_expression(&mut self) -> Result<Expression, String> {
+        let left = match self.current_token.clone() {
+            Some(Token::Identifier(ident)) => {
+                self.next_token();
+                ident
+            }
+            _ => return Err("Expected identifier.".to_string()),
+        };
+
+        // Parse operator
+        let operator = match self.current_token.clone() {
+            Some(Token::Equal) => {
+                self.next_token();
+                "=".to_string()
+            }
+            Some(Token::NotEqual) => {
+                self.next_token();
+                "!=".to_string()
+            }
+            Some(Token::LessThan) => {
+                self.next_token();
+                "<".to_string()
+            }
+            Some(Token::LessThanOrEqual) => {
+                self.next_token();
+                "<=".to_string()
+            }
+            Some(Token::GreaterThan) => {
+                self.next_token();
+                ">".to_string()
+            }
+            Some(Token::GreaterThanOrEqual) => {
+                self.next_token();
+                ">=".to_string()
+            }
+            _ => return Err("Expected comparison operator.".to_string()),
+        };
+
+        // Parse right-hand side value
+        let right = self.parse_value()?;
+
+        Ok(Expression::Binary {
+            left,
+            operator,
+            right,
+        })
+    }
+
+    /// Parses a value used in expressions.
+    fn parse_value(&mut self) -> Result<Value, String> {
+        match self.current_token.clone() {
+            Some(Token::Integer(i)) => {
+                self.next_token();
+                Ok(Value::Integer(i))
+            }
+            Some(Token::Float(f)) => {
+                self.next_token();
+                Ok(Value::Float(f))
+            }
+            Some(Token::StringLiteral(s)) => {
+                self.next_token();
+                Ok(Value::Text(s))
+            }
+            Some(Token::Null) => {
+                self.next_token();
+                Ok(Value::Null)
+            }
+            Some(Token::Boolean(b)) => {
+                self.next_token();
+                Ok(Value::Boolean(b))
+            }
+            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("DATE") => {
+                self.next_token();
+                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                    self.next_token();
+                    Ok(Value::Date(s))
+                } else {
+                    Err("Failed to parse 'DATE' literal.".to_string())
+                }
+            }
+            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIME") => {
+                self.next_token();
+                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                    self.next_token();
+                    Ok(Value::Time(s))
+                } else {
+                    Err("Failed to parse 'TIME' literal.".to_string())
+                }
+            }
+            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIMESTAMP") => {
+                self.next_token();
+                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                    self.next_token();
+                    Ok(Value::Timestamp(s))
+                } else {
+                    Err("Failed to parse 'TIMESTAMP' literal.".to_string())
+                }
+            }
+            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INTERVAL") => {
+                self.next_token();
+                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                    self.next_token();
+                    Ok(Value::Interval(s))
+                } else {
+                    Err("Failed to parse 'INTERVAL' literal.".to_string())
+                }
+            }
+            Some(Token::Illegal(s)) => Err(format!("Illegal token encountered: {}", s)),
+            _ => Err("Failed to parse value.".to_string()),
+        }
     }
 
     /// Consumes any whitespace and comments.

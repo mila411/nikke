@@ -1,3 +1,26 @@
+// src/ast.rs
+
+#[derive(Debug)]
+pub enum Query {
+    Insert(Insert),
+    Select(Select),
+    // Add other query types like Update, Delete, etc.
+}
+
+#[derive(Debug)]
+pub struct Insert {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub values: Vec<Value>,
+}
+
+#[derive(Debug)]
+pub struct Select {
+    pub columns: Vec<String>,
+    pub table: String,
+    pub where_clause: Option<Expression>,
+}
+
 #[derive(Debug)]
 pub enum Value {
     Integer(i64),
@@ -9,34 +32,15 @@ pub enum Value {
     Time(String),
     Timestamp(String),
     Interval(String),
+    // Add other value types as needed
 }
 
 #[derive(Debug)]
 pub enum Expression {
-    Equals(String, Value),
-    NotEquals(String, Value),
-    GreaterThan(String, Value),
-    LessThan(String, Value),
-}
-
-#[derive(Debug)]
-pub enum Query {
-    Select(Select),
-    Insert(Insert),
-    // Add future query types
-}
-
-#[derive(Debug)]
-pub struct Select {
-    pub columns: Vec<String>,
-    pub table: String,
-    pub where_clause: Option<Expression>,
-    // Add other fields (e.g. ORDER BY, GROUP BY)
-}
-
-#[derive(Debug)]
-pub struct Insert {
-    pub table: String,
-    pub columns: Vec<String>,
-    pub values: Vec<Value>,
+    Binary {
+        left: String,
+        operator: String,
+        right: Value,
+    },
+    // Add more expression types as needed
 }
