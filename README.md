@@ -1,6 +1,6 @@
 # nikke: Experimental RDBMS Project for Rust Learning
 
-This project, named rusqlite, is an experimental and learning repository aimed at deepening my understanding of Rust through low-level programming. Inspired by SQLite, rusqlite focuses on building a lightweight RDBMS to explore the intricacies of Rust and systems programming.
+This project, named nikke, is an experimental and learning repository aimed at deepening my understanding of Rust through low-level programming. Inspired by SQLite, nikke focuses on building a lightweight RDBMS to explore the intricacies of Rust and systems programming.
 
 ## 🛠️ Features
 
@@ -25,7 +25,7 @@ This project, named rusqlite, is an experimental and learning repository aimed a
 
 ## 🚧 Current Progress
 
-rusqlite is steadily progressing towards its goal of becoming a fully-featured RDBMS, but the following components have already been implemented, and there is still a long way to go:
+nikke is steadily progressing towards its goal of becoming a fully-featured RDBMS, but the following components have already been implemented, and there is still a long way to go:
 
 1. **Data Storage Engine**
    - [x] **Page Management using File I/O**
@@ -48,11 +48,11 @@ rusqlite is steadily progressing towards its goal of becoming a fully-featured R
 
 ## 🎯 Future Goals
 
-To transform rusqlite into a robust RDBMS akin to SQLite, the following milestones are planned:
+To transform nikke into a robust RDBMS akin to SQLite, the following milestones are planned:
 
 - **Advanced SQL Support**: Extend the SQL parser to handle more complex queries, including JOINs, subqueries, and transactions.
 - **Enhanced Indexing**: Implement additional indexing strategies such as hash indexes and full-text search.
 - **Concurrency Control**: Improve transaction management with advanced concurrency control mechanisms like Multi-Version Concurrency Control (MVCC).
 - **Performance Optimization**: Continuously optimize existing components for better performance and lower resource consumption.
 - **Comprehensive Testing**: Develop a suite of unit and integration tests to ensure reliability and stability.
-- **Documentation and Tutorials**: Provide detailed documentation and tutorials to help users understand and contribute to rusqlite.
+- **Documentation and Tutorials**: Provide detailed documentation and tutorials to help users understand and contribute to nikke.
