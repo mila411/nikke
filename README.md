@@ -1,4 +1,4 @@
-# rusqlite: Experimental RDBMS Project for Rust Learning
+# nikke: Experimental RDBMS Project for Rust Learning
 
 This project, named rusqlite, is an experimental and learning repository aimed at deepening my understanding of Rust through low-level programming. Inspired by SQLite, rusqlite focuses on building a lightweight RDBMS to explore the intricacies of Rust and systems programming.
 
