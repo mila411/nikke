@@ -1,438 +1,304 @@
-use crate::ast::{Expression, Insert, Query, Value};
-use std::iter::Peekable;
-use std::str::Chars;
+// src/parser.rs
 
-#[derive(Debug, PartialEq, Clone)]
+use crate::ast::{Insert, Query, Value};
+
+// Define the Token enum representing different types of tokens
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    KeywordSelect,
-    KeywordInsert,
-    KeywordInto,
-    KeywordValues,
-    KeywordFrom,
-    KeywordWhere,
-    KeywordAnd,
-    KeywordOr,
-    KeywordNull,
-    KeywordTrue,
-    KeywordFalse,
-    KeywordDate,
-    KeywordTime,
+    Keyword(String),
     Identifier(String),
-    Comma,
-    Asterisk,
+    StringLiteral(String),
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+    Null,
+    Date(String),
+    Time(String),
+    Timestamp(String),
+    Interval(String),
     LeftParen,
     RightParen,
-    Equal,
-    NotEqual,
-    GreaterThan,
-    LessThan,
+    Comma,
     SemiColon,
-    StringLiteral(String),
-    Float(f64),
-    Integer(i64),
-    HexInteger(i64),
-    OctalInteger(i64),
-    Comment(String),
     Whitespace(String),
+    // Add other tokens as needed
 }
 
-// Lexer structure. Parses the input string into tokens.
+// Lexer struct responsible for tokenizing the input string
 pub struct Lexer<'a> {
-    input: Peekable<Chars<'a>>,
+    input: &'a str,
+    position: usize,      // Current position in input (points to current char)
+    read_position: usize, // Current reading position in input (after current char)
+    ch: Option<char>,     // Current char under examination
 }
 
 impl<'a> Lexer<'a> {
-    /// Create a new Lexer.
-    pub fn new(input_str: &'a str) -> Self {
-        Lexer {
-            input: input_str.chars().peekable(),
+    /// Creates a new Lexer instance and initializes the first character.
+    pub fn new(input: &'a str) -> Self {
+        let mut lexer = Lexer {
+            input,
+            position: 0,
+            read_position: 0,
+            ch: None,
+        };
+        lexer.read_char(); // Initialize the first character
+        lexer
+    }
+
+    /// Reads the next character and advances positions.
+    fn read_char(&mut self) {
+        if self.read_position >= self.input.len() {
+            self.ch = None; // End of input
+        } else {
+            self.ch = Some(self.input[self.read_position..].chars().next().unwrap());
+        }
+        self.position = self.read_position;
+        if let Some(c) = self.ch {
+            self.read_position += c.len_utf8();
         }
     }
 
-    /// The input string is broken down into a vector of tokens.
-    pub fn tokenize(&mut self) -> Result<Vec<Token>, String> {
-        let mut tokens = Vec::new();
-
-        while let Some(&c) = self.input.peek() {
-            if c.is_whitespace() {
-                tokens.push(self.consume_whitespace());
-            } else if c == '-' && self.peek_next() == Some('-') {
-                tokens.push(self.consume_single_line_comment());
-            } else if c == '/' && self.peek_next() == Some('*') {
-                tokens.push(self.consume_multi_line_comment());
-            } else if c.is_alphabetic() || c == '_' {
-                tokens.push(self.consume_identifier_or_keyword());
-            } else if c.is_digit(10) {
-                let token = self.consume_number()?;
-                tokens.push(token);
-            } else {
-                match c {
-                    ',' => {
-                        self.input.next();
-                        tokens.push(Token::Comma);
-                    }
-                    '*' => {
-                        self.input.next();
-                        tokens.push(Token::Asterisk);
-                    }
-                    '(' => {
-                        self.input.next();
-                        tokens.push(Token::LeftParen);
-                    }
-                    ')' => {
-                        self.input.next();
-                        tokens.push(Token::RightParen);
-                    }
-                    '=' => {
-                        self.input.next();
-                        tokens.push(Token::Equal);
-                    }
-                    '!' => {
-                        self.input.next();
-                        if self.input.peek() == Some(&'=') {
-                            self.input.next();
-                            tokens.push(Token::NotEqual);
-                        } else {
-                            return Err("An invalid token '!' was detected.".to_string());
-                        }
-                    }
-                    '>' => {
-                        self.input.next();
-                        tokens.push(Token::GreaterThan);
-                    }
-                    '<' => {
-                        self.input.next();
-                        tokens.push(Token::LessThan);
-                    }
-                    ';' => {
-                        self.input.next();
-                        tokens.push(Token::SemiColon);
-                    }
-                    '\'' => {
-                        tokens.push(self.consume_string_literal());
-                    }
-                    _ => {
-                        return Err(format!("Unknown character '{}' detected", c));
-                    }
-                }
-            }
-        }
-
-        Ok(tokens)
-    }
-
-    /// will peek at the next character, but I will not advance the position.
-    fn peek_next(&mut self) -> Option<char> {
-        let mut iter = self.input.clone();
-        iter.next()
-    }
-
-    /// Consumes whitespace characters and returns a whitespace token.
-    fn consume_whitespace(&mut self) -> Token {
-        let mut whitespace = String::new();
-        while let Some(&c) = self.input.peek() {
-            if c.is_whitespace() {
-                whitespace.push(c);
-                self.input.next();
-            } else {
+    /// Skips over any whitespace characters.
+    fn skip_whitespace(&mut self) {
+        while let Some(c) = self.ch {
+            if !c.is_whitespace() {
                 break;
             }
+            self.read_char();
         }
-        Token::Whitespace(whitespace)
     }
 
-    /// Consumes a single-line comment and returns a Comment token.
-    fn consume_single_line_comment(&mut self) -> Token {
-        let mut comment = String::new();
-        // Consumes '--'
-        self.input.next();
-        self.input.next();
-        while let Some(&c) = self.input.peek() {
-            if c == '\n' {
+    /// Reads a string literal enclosed in single quotes.
+    fn read_string_literal(&mut self) -> String {
+        self.read_char(); // Consume the opening quote
+        let mut literal = String::new();
+        while let Some(c) = self.ch {
+            if c == '\'' {
                 break;
             }
-            comment.push(c);
-            self.input.next();
+            literal.push(c);
+            self.read_char();
         }
-        Token::Comment(comment)
+        self.read_char(); // Consume the closing quote
+        literal
     }
 
-    /// Consumes a multi-line comment and returns a Comment token.
-    fn consume_multi_line_comment(&mut self) -> Token {
-        let mut comment = String::new();
-        // Consume '/*'
-        self.input.next();
-        self.input.next();
-        while let Some(&c) = self.input.peek() {
-            if c == '*' && self.peek_next() == Some('/') {
-                self.input.next();
-                self.input.next();
-                break;
-            } else {
-                comment.push(c);
-                self.input.next();
-            }
-        }
-        Token::Comment(comment)
-    }
-
-    /// It consumes an identifier or keyword and returns the corresponding token.
-    fn consume_identifier_or_keyword(&mut self) -> Token {
-        let mut identifier = String::new();
-        while let Some(&c) = self.input.peek() {
-            if c.is_alphanumeric() || c == '_' {
-                identifier.push(c);
-                self.input.next();
-            } else {
-                break;
-            }
-        }
-
-        match identifier.to_uppercase().as_str() {
-            "SELECT" => Token::KeywordSelect,
-            "INSERT" => Token::KeywordInsert,
-            "INTO" => Token::KeywordInto,
-            "VALUES" => Token::KeywordValues,
-            "FROM" => Token::KeywordFrom,
-            "WHERE" => Token::KeywordWhere,
-            "AND" => Token::KeywordAnd,
-            "OR" => Token::KeywordOr,
-            "NULL" => Token::KeywordNull,
-            "TRUE" => Token::KeywordTrue,
-            "FALSE" => Token::KeywordFalse,
-            "DATE" => Token::KeywordDate,
-            "TIME" => Token::KeywordTime,
-            _ => Token::Identifier(identifier),
-        }
-    }
-
-    /// Consumes a numeric literal and returns an Integer, Float, HexInteger, or OctalInteger token.
-    fn consume_number(&mut self) -> Result<Token, String> {
+    /// Reads a numeric literal (integer or float).
+    fn read_number(&mut self) -> Token {
         let mut number = String::new();
-
-        // Check: 0x or 0o prefix
-        if self.input.peek() == Some(&'0') {
-            let mut iter = self.input.clone();
-            iter.next(); // '0'
-
-            if let Some(c) = iter.next() {
-                if c == 'x' || c == 'X' {
-                    // hexadecimal
-                    self.input.next(); // '0'
-                    self.input.next(); // 'x' または 'X'
-                    return self.consume_hex_number();
-                } else if c == 'o' || c == 'O' {
-                    // Octal
-                    self.input.next(); // '0'
-                    self.input.next(); // 'o' または 'O'
-                    return self.consume_oct_number();
-                }
-            }
-        }
-
-        // Normal decimal or floating-point number
-        while let Some(&c) = self.input.peek() {
-            if c.is_digit(10) {
-                number.push(c);
-                self.input.next();
-            } else {
+        while let Some(c) = self.ch {
+            if !c.is_ascii_digit() && c != '.' {
                 break;
             }
+            number.push(c);
+            self.read_char();
         }
-
-        // Checking floating-point numbers
-        if self.input.peek() == Some(&'.') {
-            number.push('.');
-            self.input.next();
-            while let Some(&c) = self.input.peek() {
-                if c.is_digit(10) {
-                    number.push(c);
-                    self.input.next();
-                } else {
-                    break;
-                }
-            }
-            // Optional support for exponential notation
-            if self.input.peek() == Some(&'e') || self.input.peek() == Some(&'E') {
-                number.push(self.input.next().unwrap());
-                if let Some(&c) = self.input.peek() {
-                    if c == '+' || c == '-' {
-                        number.push(c);
-                        self.input.next();
-                    }
-                }
-                while let Some(&c) = self.input.peek() {
-                    if c.is_digit(10) {
-                        number.push(c);
-                        self.input.next();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            match number.parse::<f64>() {
-                Ok(f) => Ok(Token::Float(f)),
-                Err(_) => Err("Invalid floating-point literal".to_string()),
+        if number.contains('.') {
+            if let Ok(f) = number.parse::<f64>() {
+                Token::Float(f)
+            } else {
+                // Handle parse error if needed
+                Token::Float(0.0)
             }
         } else {
-            // Integerリテラル
-            match number.parse::<i64>() {
-                Ok(i) => Ok(Token::Integer(i)),
-                Err(_) => Err("Invalid integer literal".to_string()),
+            if let Ok(i) = number.parse::<i64>() {
+                Token::Integer(i)
+            } else {
+                // Handle parse error if needed
+                Token::Integer(0)
             }
         }
     }
 
-    /// Consumes a hexadecimal literal and returns a HexInteger token.
-    fn consume_hex_number(&mut self) -> Result<Token, String> {
-        let mut hex_number = String::new();
-        while let Some(&c) = self.input.peek() {
-            if c.is_digit(16) {
-                hex_number.push(c);
-                self.input.next();
-            } else {
+    /// Reads an identifier or keyword.
+    fn read_identifier_or_keyword(&mut self) -> Token {
+        let mut ident = String::new();
+        while let Some(c) = self.ch {
+            if !Self::is_identifier_part(c) {
                 break;
             }
+            ident.push(c);
+            self.read_char();
         }
-        match i64::from_str_radix(&hex_number, 16) {
-            Ok(num) => Ok(Token::HexInteger(num)),
-            Err(_) => Err(format!("Invalid hexadecimal literal: 0x{}", hex_number)),
+        if Self::is_keyword(&ident) {
+            match ident.to_uppercase().as_str() {
+                "INSERT" => Token::Keyword(ident.to_uppercase()),
+                "INTO" => Token::Keyword(ident.to_uppercase()),
+                "VALUES" => Token::Keyword(ident.to_uppercase()),
+                "NULL" => Token::Null,
+                "TRUE" => Token::Boolean(true),
+                "FALSE" => Token::Boolean(false),
+                "DATE" => Token::Keyword(ident.to_uppercase()),
+                "TIME" => Token::Keyword(ident.to_uppercase()),
+                "TIMESTAMP" => Token::Keyword(ident.to_uppercase()),
+                "INTERVAL" => Token::Keyword(ident.to_uppercase()),
+                _ => Token::Keyword(ident.to_uppercase()),
+            }
+        } else {
+            Token::Identifier(ident)
         }
     }
 
-    /// Consumes an octal literal and returns an OctalInteger token.
-    fn consume_oct_number(&mut self) -> Result<Token, String> {
-        let mut oct_number = String::new();
-        while let Some(&c) = self.input.peek() {
-            if c.is_digit(8) {
-                oct_number.push(c);
-                self.input.next();
-            } else {
-                break;
-            }
-        }
-        match i64::from_str_radix(&oct_number, 8) {
-            Ok(num) => Ok(Token::OctalInteger(num)),
-            Err(_) => Err(format!("Invalid octal literal: 0o{}", oct_number)),
-        }
+    /// Checks if a character can start an identifier.
+    fn is_identifier_start(c: char) -> bool {
+        c.is_alphabetic() || c == '_'
     }
 
-    /// Consumes a string literal and returns a StringLiteral token.
-    fn consume_string_literal(&mut self) -> Token {
-        self.input.next();
-        let mut string = String::new();
-        while let Some(&c) = self.input.peek() {
-            if c == '\'' {
-                self.input.next();
-                break;
-            } else {
-                string.push(c);
-                self.input.next();
+    /// Checks if a character can be part of an identifier.
+    fn is_identifier_part(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// Checks if a string is a SQL keyword.
+    fn is_keyword(ident: &str) -> bool {
+        matches!(
+            ident.to_uppercase().as_str(),
+            "INSERT"
+                | "INTO"
+                | "VALUES"
+                | "DATE"
+                | "TIME"
+                | "TIMESTAMP"
+                | "INTERVAL"
+                | "NULL"
+                | "TRUE"
+                | "FALSE"
+        )
+    }
+
+    /// Returns the next token from the input.
+    pub fn next_token(&mut self) -> Option<Token> {
+        self.skip_whitespace();
+
+        let token = match self.ch {
+            Some('(') => {
+                self.read_char();
+                Token::LeftParen
             }
-        }
-        Token::StringLiteral(string)
+            Some(')') => {
+                self.read_char();
+                Token::RightParen
+            }
+            Some(',') => {
+                self.read_char();
+                Token::Comma
+            }
+            Some(';') => {
+                self.read_char();
+                Token::SemiColon
+            }
+            Some('\'') => Token::StringLiteral(self.read_string_literal()),
+            Some(c) if c.is_ascii_digit() => self.read_number(),
+            Some(c) if Self::is_identifier_start(c) => self.read_identifier_or_keyword(),
+            Some(_) => {
+                // Handle unknown characters
+                self.read_char();
+                return None;
+            }
+            None => {
+                // End of input
+                return None;
+            }
+        };
+        Some(token)
     }
 }
 
-pub struct Parser {
-    tokens: Vec<Token>,
-    position: usize,
+// Parser struct responsible for parsing tokens into an abstract syntax tree
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
+    current_token: Option<Token>,
 }
 
-impl Parser {
-    /// Create a new parser. Tokenize the input string.
-    pub fn new(query_str: &str) -> Result<Self, String> {
-        let mut lexer = Lexer::new(query_str);
-        let tokens = lexer.tokenize()?;
-        println!("Token: {:?}", tokens); // For debugging
+impl<'a> Parser<'a> {
+    /// Creates a new parser instance.
+    pub fn new(input: &'a str) -> Result<Self, String> {
+        let mut lexer = Lexer::new(input);
+        let first_token = lexer.next_token();
         Ok(Parser {
-            tokens,
-            position: 0,
+            lexer,
+            current_token: first_token,
         })
     }
 
-    /// Obtain the next token from the current position of the parser.
-    fn next_token(&mut self) -> Option<&Token> {
-        let token = self.tokens.get(self.position);
-        if token.is_some() {
-            self.position += 1;
-        }
-        token
+    /// Advances to the next token.
+    fn next_token(&mut self) {
+        self.current_token = self.lexer.next_token();
     }
 
-    /// This refers to the token for the current position of the purser.
-    fn peek_token(&self) -> Option<&Token> {
-        self.tokens.get(self.position)
-    }
-
-    /// Consumes whitespace and comments.
-    fn consume_whitespace_and_comments(&mut self) {
-        while let Some(token) = self.peek_token() {
-            match token {
-                Token::Whitespace(_) | Token::Comment(_) => {
-                    self.position += 1;
-                }
-                _ => break,
+    /// Matches and consumes the current token if it matches the expected token.
+    fn match_token(&mut self, token: &Token) -> bool {
+        if let Some(ref current) = self.current_token {
+            if current == token {
+                self.next_token();
+                true
+            } else {
+                false
             }
-        }
-    }
-
-    /// The main function of the purser.
-    pub fn parse(&mut self) -> Result<Query, String> {
-        self.consume_whitespace_and_comments();
-
-        match self.peek_token() {
-            Some(Token::KeywordInsert) => self.parse_insert(),
-            Some(Token::KeywordSelect) => self.parse_select(),
-            _ => Err("Unknown query type".to_string()),
-        }
-    }
-
-    /// Parses the INSERT statement.
-    fn parse_insert(&mut self) -> Result<Query, String> {
-        self.consume_whitespace_and_comments();
-
-        // Consumption of INSERT keywords
-        if !self.match_keyword("INSERT") {
-            return Err("The INSERT keyword is required.".to_string());
-        }
-
-        self.consume_whitespace_and_comments();
-
-        // Consumption of INTO keywords
-        if !self.match_keyword("INTO") {
-            return Err("INTO Keyword is required".to_string());
-        }
-
-        self.consume_whitespace_and_comments();
-
-        // Parsing table names
-        let table = if let Some(Token::Identifier(name)) = self.next_token() {
-            name.clone()
         } else {
-            return Err("Failed to parse table name".to_string());
+            false
+        }
+    }
+
+    /// Matches and consumes a keyword.
+    fn match_keyword(&mut self, keyword: &str) -> bool {
+        if let Some(Token::Keyword(ref kw)) = self.current_token {
+            if kw.eq_ignore_ascii_case(keyword) {
+                self.next_token();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Parses the entire query.
+    pub fn parse(&mut self) -> Result<Query, String> {
+        match self.current_token {
+            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INSERT") => {
+                self.parse_insert()
+            }
+            _ => Err("Unsupported query type.".to_string()),
+        }
+    }
+
+    /// Parses an INSERT statement.
+    fn parse_insert(&mut self) -> Result<Query, String> {
+        // Consume 'INSERT'
+        if !self.match_keyword("INSERT") {
+            return Err("Expected 'INSERT' keyword.".to_string());
+        }
+
+        // Consume 'INTO'
+        if !self.match_keyword("INTO") {
+            return Err("Expected 'INTO' keyword.".to_string());
+        }
+
+        // Parse table name
+        let table = if let Some(Token::Identifier(ref name)) = self.current_token {
+            let table_name = name.clone();
+            self.next_token();
+            table_name
+        } else {
+            return Err("Expected table name.".to_string());
         };
 
-        self.consume_whitespace_and_comments();
-
-        // Consumption of left parentheses
+        // Consume '('
         if !self.match_token(&Token::LeftParen) {
-            return Err("Left parentheses are required.".to_string());
+            return Err("Expected '('.".to_string());
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Parsing column names
+        // Parse column names
         let mut columns = Vec::new();
         loop {
-            self.consume_whitespace_and_comments();
-            if let Some(Token::Identifier(col)) = self.next_token() {
+            if let Some(Token::Identifier(ref col)) = self.current_token {
                 columns.push(col.clone());
+                self.next_token();
             } else {
-                return Err("Failed to parse column name".to_string());
+                return Err("Expected column name.".to_string());
             }
-
-            self.consume_whitespace_and_comments();
 
             if self.match_token(&Token::Comma) {
                 continue;
@@ -441,58 +307,87 @@ impl Parser {
             }
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Consumption of right parentheses
+        // Consume ')'
         if !self.match_token(&Token::RightParen) {
-            return Err("A right parenthesis is required.".to_string());
+            return Err("Expected ')'.".to_string());
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Consumption of VALUES keywords
+        // Consume 'VALUES'
         if !self.match_keyword("VALUES") {
-            return Err("VALUES Keyword is required".to_string());
+            return Err("Expected 'VALUES' keyword.".to_string());
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Consumption of left parentheses
+        // Consume '('
         if !self.match_token(&Token::LeftParen) {
-            return Err("Left parentheses are required.".to_string());
+            return Err("Expected '('.".to_string());
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Value Parsing
+        // Parse values
         let mut values = Vec::new();
         loop {
             self.consume_whitespace_and_comments();
-            match self.next_token() {
-                Some(Token::Integer(i)) => values.push(Value::Integer(*i)),
-                Some(Token::HexInteger(i)) => values.push(Value::Integer(*i)),
-                Some(Token::OctalInteger(i)) => values.push(Value::Integer(*i)),
-                Some(Token::Float(f)) => values.push(Value::Float(*f)),
-                Some(Token::StringLiteral(s)) => values.push(Value::Text(s.clone())),
-                Some(Token::KeywordNull) => values.push(Value::Null),
-                Some(Token::KeywordTrue) => values.push(Value::Boolean(true)),
-                Some(Token::KeywordFalse) => values.push(Value::Boolean(false)),
-                Some(Token::KeywordDate) => {
-                    if let Some(Token::StringLiteral(s)) = self.next_token() {
-                        values.push(Value::Date(s.clone()));
+
+            let value = match self.current_token.clone() {
+                Some(Token::Integer(i)) => {
+                    self.next_token();
+                    Value::Integer(i)
+                }
+                Some(Token::Float(f)) => {
+                    self.next_token();
+                    Value::Float(f)
+                }
+                Some(Token::StringLiteral(s)) => {
+                    self.next_token();
+                    Value::Text(s)
+                }
+                Some(Token::Null) => {
+                    self.next_token();
+                    Value::Null
+                }
+                Some(Token::Boolean(b)) => {
+                    self.next_token();
+                    Value::Boolean(b)
+                }
+                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("DATE") => {
+                    self.next_token();
+                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                        self.next_token();
+                        Value::Date(s)
                     } else {
-                        return Err("Failed to parse DATE literal".to_string());
+                        return Err("Failed to parse 'DATE' literal.".to_string());
                     }
                 }
-                Some(Token::KeywordTime) => {
-                    if let Some(Token::StringLiteral(s)) = self.next_token() {
-                        values.push(Value::Time(s.clone()));
+                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIME") => {
+                    self.next_token();
+                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                        self.next_token();
+                        Value::Time(s)
                     } else {
-                        return Err("Failed to parse TIME literal".to_string());
+                        return Err("Failed to parse 'TIME' literal.".to_string());
                     }
                 }
-                _ => return Err("Failed to parse value".to_string()),
-            }
+                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIMESTAMP") => {
+                    self.next_token();
+                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                        self.next_token();
+                        Value::Timestamp(s)
+                    } else {
+                        return Err("Failed to parse 'TIMESTAMP' literal.".to_string());
+                    }
+                }
+                Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INTERVAL") => {
+                    self.next_token();
+                    if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
+                        self.next_token();
+                        Value::Interval(s)
+                    } else {
+                        return Err("Failed to parse 'INTERVAL' literal.".to_string());
+                    }
+                }
+                _ => return Err("Failed to parse value.".to_string()),
+            };
+
+            values.push(value);
 
             self.consume_whitespace_and_comments();
 
@@ -503,16 +398,12 @@ impl Parser {
             }
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Consumption of right parentheses
+        // Consume ')'
         if !self.match_token(&Token::RightParen) {
-            return Err("A right parenthesis is required.".to_string());
+            return Err("Expected ')'.".to_string());
         }
 
-        self.consume_whitespace_and_comments();
-
-        // Consumption of optional semicolons
+        // Consume optional ';'
         self.match_token(&Token::SemiColon);
 
         Ok(Query::Insert(Insert {
@@ -522,110 +413,11 @@ impl Parser {
         }))
     }
 
-    /// The SELECT statement is parsed (implementation omitted).
-    fn parse_select(&mut self) -> Result<Query, String> {
-        Err("The SELECT parser is not yet implemented.".to_string())
-    }
-
-    /// Match the keywords.
-    fn match_keyword(&mut self, keyword: &str) -> bool {
-        if let Some(token) = self.peek_token() {
-            let token_str = match token {
-                Token::KeywordSelect => "SELECT",
-                Token::KeywordInsert => "INSERT",
-                Token::KeywordInto => "INTO",
-                Token::KeywordValues => "VALUES",
-                Token::KeywordFrom => "FROM",
-                Token::KeywordWhere => "WHERE",
-                Token::KeywordAnd => "AND",
-                Token::KeywordOr => "OR",
-                Token::KeywordNull => "NULL",
-                Token::KeywordTrue => "TRUE",
-                Token::KeywordFalse => "FALSE",
-                Token::KeywordDate => "DATE",
-                Token::KeywordTime => "TIME",
-                _ => "",
-            };
-            if keyword.to_uppercase() == token_str {
-                self.position += 1;
-                return true;
-            }
+    /// Consumes any whitespace and comments.
+    fn consume_whitespace_and_comments(&mut self) {
+        while let Some(Token::Whitespace(_)) = self.current_token {
+            self.next_token();
         }
-        false
-    }
-
-    /// Match the tokens.
-    fn match_token(&mut self, expected: &Token) -> bool {
-        if let Some(token) = self.peek_token() {
-            if token == expected {
-                self.position += 1;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Parses the WHERE clause expression.
-    pub fn parse_expression(&mut self) -> Result<Expression, String> {
-        self.consume_whitespace_and_comments();
-
-        // Left-hand side parse
-        let left = if let Some(Token::Identifier(left)) = self.next_token() {
-            left.clone()
-        } else {
-            return Err("The left side of the WHERE clause is invalid.".to_string());
-        };
-
-        self.consume_whitespace_and_comments();
-
-        // Operator Parsing
-        let operator = if self.match_token(&Token::Equal) {
-            "="
-        } else if self.match_token(&Token::NotEqual) {
-            "!="
-        } else if self.match_token(&Token::GreaterThan) {
-            ">"
-        } else if self.match_token(&Token::LessThan) {
-            "<"
-        } else {
-            return Err("The operator in the WHERE clause is invalid.".to_string());
-        };
-
-        self.consume_whitespace_and_comments();
-
-        // Right-hand side parsing
-        let right = match self.next_token() {
-            Some(Token::Integer(i)) => Value::Integer(*i),
-            Some(Token::HexInteger(i)) => Value::Integer(*i),
-            Some(Token::OctalInteger(i)) => Value::Integer(*i),
-            Some(Token::Float(f)) => Value::Float(*f),
-            Some(Token::StringLiteral(s)) => Value::Text(s.clone()),
-            Some(Token::KeywordNull) => Value::Null,
-            Some(Token::KeywordTrue) => Value::Boolean(true),
-            Some(Token::KeywordFalse) => Value::Boolean(false),
-            Some(Token::KeywordDate) => {
-                if let Some(Token::StringLiteral(s)) = self.next_token() {
-                    Value::Date(s.clone())
-                } else {
-                    return Err("Failed to parse DATE literal".to_string());
-                }
-            }
-            Some(Token::KeywordTime) => {
-                if let Some(Token::StringLiteral(s)) = self.next_token() {
-                    Value::Time(s.clone())
-                } else {
-                    return Err("Failed to parse TIME literal".to_string());
-                }
-            }
-            _ => return Err("The right side of the WHERE clause is invalid.".to_string()),
-        };
-
-        match operator {
-            "=" => Ok(Expression::Equals(left, right)),
-            "!=" => Ok(Expression::NotEquals(left, right)),
-            ">" => Ok(Expression::GreaterThan(left, right)),
-            "<" => Ok(Expression::LessThan(left, right)),
-            _ => Err("The operator in the WHERE clause is invalid.".to_string()),
-        }
+        // Add comment handling if necessary
     }
 }

@@ -7,6 +7,8 @@ pub enum Value {
     Null,
     Date(String),
     Time(String),
+    Timestamp(String),
+    Interval(String),
 }
 
 #[derive(Debug)]
