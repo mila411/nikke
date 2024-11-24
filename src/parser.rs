@@ -1,237 +1,71 @@
 // src/parser.rs
 
-use crate::ast::{Expression, Insert, Query, Select, Value};
+use crate::ast::{
+    BinaryOperator, Expression, Insert, Join, Ordering, Query, Select, SortOrder, Table, Value,
+};
+use std::str::Chars;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Token {
-    Keyword(String),
+    // 識別子
     Identifier(String),
-    StringLiteral(String),
+    // リテラル
     Integer(i64),
     Float(f64),
+    StringLiteral(String),
     Boolean(bool),
     Null,
-    Date(String),
-    Time(String),
-    Timestamp(String),
-    Interval(String),
-    Star,
+    // 演算子
     Equal,
     NotEqual,
     LessThan,
     LessThanOrEqual,
     GreaterThan,
     GreaterThanOrEqual,
-    And,
-    Or,
-    Not,
+    // 区切り記号
+    Comma,
     LeftParen,
     RightParen,
-    Comma,
-    SemiColon,
-    Whitespace(String),
-    Illegal(String), // For invalid tokens
-                     // Add other tokens as needed
+    Dot, // 追加: ドット
+    // キーワード
+    Keyword(String),
+    // その他必要なトークンを追加
 }
 
-// Lexer struct responsible for tokenizing the input string
 pub struct Lexer<'a> {
-    input: &'a str,
-    position: usize,      // Current position in input (points to current char)
-    read_position: usize, // Current reading position in input (after current char)
-    ch: Option<char>,     // Current char under examination
+    chars: Chars<'a>,
+    current_char: Option<char>,
+    peek_char: Option<char>,
 }
 
 impl<'a> Lexer<'a> {
-    /// Creates a new Lexer instance and initializes the first character.
     pub fn new(input: &'a str) -> Self {
-        let mut lexer = Lexer {
-            input,
-            position: 0,
-            read_position: 0,
-            ch: None,
+        let mut l = Lexer {
+            chars: input.chars(),
+            current_char: None,
+            peek_char: None,
         };
-        lexer.read_char(); // Initialize the first character
-        lexer
+        l.read_char();
+        l.read_char_peek();
+        l
     }
 
-    /// Reads the next character and advances positions.
     fn read_char(&mut self) {
-        if self.read_position >= self.input.len() {
-            self.ch = None; // End of input
-        } else {
-            self.ch = Some(self.input[self.read_position..].chars().next().unwrap());
-        }
-        self.position = self.read_position;
-        if let Some(c) = self.ch {
-            self.read_position += c.len_utf8();
-        }
+        self.current_char = self.chars.next();
     }
 
-    /// Peeks at the next character without consuming it.
-    fn peek_char(&self) -> Option<char> {
-        if self.read_position >= self.input.len() {
-            None
-        } else {
-            self.input[self.read_position..].chars().next()
-        }
+    fn read_char_peek(&mut self) {
+        self.peek_char = self.chars.clone().next();
     }
 
-    /// Skips over any whitespace characters.
-    fn skip_whitespace(&mut self) {
-        while let Some(c) = self.ch {
-            if !c.is_whitespace() {
-                break;
-            }
-            self.read_char();
-        }
-    }
-
-    /// Reads a string literal enclosed in single quotes.
-    fn read_string_literal(&mut self) -> String {
-        self.read_char(); // Consume the opening quote
-        let mut literal = String::new();
-        while let Some(c) = self.ch {
-            if c == '\'' {
-                break;
-            }
-            literal.push(c);
-            self.read_char();
-        }
-        self.read_char(); // Consume the closing quote
-        literal
-    }
-
-    /// Reads a numeric literal (integer, float, hexadecimal, or octal).
-    fn read_number(&mut self) -> Token {
-        if let Some('0') = self.ch {
-            // Possible hexadecimal or octal
-            if let Some(next_ch) = self.peek_char() {
-                if next_ch == 'x' || next_ch == 'X' {
-                    // Hexadecimal
-                    self.read_char(); // Consume '0'
-                    self.read_char(); // Consume 'x' or 'X'
-                    return self.read_hex_number();
-                } else if next_ch == 'o' || next_ch == 'O' {
-                    // Octal
-                    self.read_char(); // Consume '0'
-                    self.read_char(); // Consume 'o' or 'O'
-                    return self.read_octal_number();
-                }
-            }
-        }
-
-        // Existing number parsing (integer or float)
-        let mut number = String::new();
-        let mut has_decimal_point = false;
-        while let Some(c) = self.ch {
-            if c == '.' {
-                if has_decimal_point {
-                    break; // Second decimal point encountered
-                }
-                has_decimal_point = true;
-                number.push(c);
-            } else if c == 'e' || c == 'E' {
-                number.push(c);
-                self.read_char();
-                if let Some(next_c) = self.ch {
-                    if next_c == '+' || next_c == '-' {
-                        number.push(next_c);
-                        self.read_char();
-                    }
-                }
-                continue;
-            } else if c.is_ascii_digit() {
-                number.push(c);
-            } else {
-                break;
-            }
-            self.read_char();
-        }
-
-        if has_decimal_point || number.contains('e') || number.contains('E') {
-            if let Ok(f) = number.parse::<f64>() {
-                Token::Float(f)
-            } else {
-                Token::Illegal(number)
-            }
-        } else {
-            if let Ok(i) = number.parse::<i64>() {
-                Token::Integer(i)
-            } else {
-                Token::Illegal(number)
-            }
-        }
-    }
-
-    /// Reads a hexadecimal number.
-    fn read_hex_number(&mut self) -> Token {
-        let mut number = String::new();
-        while let Some(c) = self.ch {
-            if !c.is_digit(16) {
-                break;
-            }
-            number.push(c);
-            self.read_char();
-        }
-        if let Ok(i) = i64::from_str_radix(&number, 16) {
-            Token::Integer(i)
-        } else {
-            Token::Illegal(format!("0x{}", number))
-        }
-    }
-
-    /// Reads an octal number.
-    fn read_octal_number(&mut self) -> Token {
-        let mut number = String::new();
-        while let Some(c) = self.ch {
-            if c < '0' || c > '7' {
-                break;
-            }
-            number.push(c);
-            self.read_char();
-        }
-        if let Ok(i) = i64::from_str_radix(&number, 8) {
-            Token::Integer(i)
-        } else {
-            Token::Illegal(format!("0o{}", number))
-        }
-    }
-
-    /// Reads an identifier or keyword.
-    fn read_identifier_or_keyword(&mut self) -> Token {
-        let mut ident = String::new();
-        while let Some(c) = self.ch {
-            if !Self::is_identifier_part(c) {
-                break;
-            }
-            ident.push(c);
-            self.read_char();
-        }
-        match ident.to_uppercase().as_str() {
-            "INSERT" | "INTO" | "VALUES" | "SELECT" | "FROM" | "WHERE" | "AND" | "OR" | "NOT"
-            | "DATE" | "TIME" | "TIMESTAMP" | "INTERVAL" | "NULL" | "TRUE" | "FALSE" => {
-                Token::Keyword(ident.to_uppercase())
-            }
-            _ => Token::Identifier(ident),
-        }
-    }
-
-    /// Checks if a character can start an identifier.
-    fn is_identifier_start(c: char) -> bool {
-        c.is_alphabetic() || c == '_'
-    }
-
-    /// Checks if a character can be part of an identifier.
-    fn is_identifier_part(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
-    }
-
-    /// Returns the next token from the input.
     pub fn next_token(&mut self) -> Option<Token> {
         self.skip_whitespace();
 
-        let token = match self.ch {
+        let token = match self.current_char {
+            Some(',') => {
+                self.read_char();
+                Token::Comma
+            }
             Some('(') => {
                 self.read_char();
                 Token::LeftParen
@@ -240,75 +74,187 @@ impl<'a> Lexer<'a> {
                 self.read_char();
                 Token::RightParen
             }
-            Some(',') => {
+            Some('.') => {
                 self.read_char();
-                Token::Comma
-            }
-            Some(';') => {
-                self.read_char();
-                Token::SemiColon
-            }
-            Some('*') => {
-                self.read_char();
-                Token::Star
+                Token::Dot
             }
             Some('=') => {
-                self.read_char();
-                Token::Equal
+                if self.peek_char == Some('=') {
+                    self.read_char();
+                    self.read_char();
+                    Token::Equal
+                } else {
+                    self.read_char();
+                    Token::Equal
+                }
             }
             Some('!') => {
-                self.read_char();
-                if let Some('=') = self.ch {
+                if self.peek_char == Some('=') {
+                    self.read_char();
                     self.read_char();
                     Token::NotEqual
                 } else {
-                    Token::Not
+                    // '!' 単体のトークンが必要な場合はここに追加
+                    self.read_char();
+                    // 例として NotEqual として扱います
+                    Token::NotEqual
                 }
             }
             Some('<') => {
-                self.read_char();
-                if let Some('=') = self.ch {
+                if self.peek_char == Some('=') {
+                    self.read_char();
                     self.read_char();
                     Token::LessThanOrEqual
                 } else {
+                    self.read_char();
                     Token::LessThan
                 }
             }
             Some('>') => {
-                self.read_char();
-                if let Some('=') = self.ch {
+                if self.peek_char == Some('=') {
+                    self.read_char();
                     self.read_char();
                     Token::GreaterThanOrEqual
                 } else {
+                    self.read_char();
                     Token::GreaterThan
                 }
             }
-            Some('\'') => Token::StringLiteral(self.read_string_literal()),
-            Some(c) if c.is_ascii_digit() => self.read_number(),
-            Some(c) if Self::is_identifier_start(c) => self.read_identifier_or_keyword(),
-            Some(_) => {
-                // Handle unknown characters
-                let illegal_char = self.ch.unwrap();
-                self.read_char();
-                Token::Illegal(illegal_char.to_string())
+            Some('"') | Some('\'') => {
+                let literal = self.read_string();
+                Token::StringLiteral(literal)
             }
-            None => {
-                // End of input
+            Some(c) if self.is_letter(c) || c == '_' => {
+                let literal = self.read_identifier();
+                if is_keyword(&literal) {
+                    Token::Keyword(literal)
+                } else if is_boolean(&literal) {
+                    Token::Boolean(literal.to_lowercase() == "true")
+                } else {
+                    Token::Identifier(literal)
+                }
+            }
+            Some(c) if c.is_digit(10) => {
+                let number = self.read_number();
+                if number.contains('.') {
+                    match number.parse::<f64>() {
+                        Ok(f) => Token::Float(f),
+                        Err(_) => Token::Float(0.0), // エラーハンドリングを強化することを推奨
+                    }
+                } else {
+                    match number.parse::<i64>() {
+                        Ok(i) => Token::Integer(i),
+                        Err(_) => Token::Integer(0), // エラーハンドリングを強化することを推奨
+                    }
+                }
+            }
+            Some(_) => {
+                // 未知のトークンの場合、エラーハンドリングを追加
+                // 例: Token::Illegal(c)
+                // ここでは単に次の文字をスキップし、Noneを返します
+                self.read_char();
                 return None;
             }
+            None => return None,
         };
+
         Some(token)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(c) = self.current_char {
+            if c.is_whitespace() {
+                self.read_char();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn read_identifier(&mut self) -> String {
+        let mut identifier = String::new();
+        while let Some(c) = self.current_char {
+            if self.is_letter(c) || c.is_digit(10) || c == '_' {
+                identifier.push(c);
+                self.read_char();
+            } else {
+                break;
+            }
+        }
+        identifier
+    }
+
+    fn read_number(&mut self) -> String {
+        let mut number = String::new();
+        while let Some(c) = self.current_char {
+            if c.is_digit(10) || c == '.' {
+                number.push(c);
+                self.read_char();
+            } else {
+                break;
+            }
+        }
+        number
+    }
+
+    fn read_string(&mut self) -> String {
+        let quote = self.current_char.unwrap();
+        self.read_char(); // 開始の引用符を飛ばす
+        let mut string = String::new();
+        while let Some(c) = self.current_char {
+            if c == quote {
+                break;
+            }
+            string.push(c);
+            self.read_char();
+        }
+        self.read_char(); // 終了の引用符を飛ばす
+        string
+    }
+
+    fn is_letter(&self, c: char) -> bool {
+        c.is_alphabetic()
     }
 }
 
-// Parser struct responsible for parsing tokens into an abstract syntax tree
+fn is_keyword(literal: &str) -> bool {
+    matches!(
+        literal.to_uppercase().as_str(),
+        "SELECT"
+            | "INSERT"
+            | "INTO"
+            | "VALUES"
+            | "FROM"
+            | "JOIN"
+            | "ON"
+            | "WHERE"
+            | "GROUP"
+            | "BY"
+            | "HAVING"
+            | "ORDER"
+            | "ASC"
+            | "DESC"
+            | "AND"
+            | "OR"
+            | "NOT"
+    )
+}
+
+fn is_boolean(literal: &str) -> bool {
+    lowercase_eq(literal, "TRUE") || lowercase_eq(literal, "FALSE")
+}
+
+fn lowercase_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current_token: Option<Token>,
 }
 
 impl<'a> Parser<'a> {
-    /// Creates a new parser instance.
+    /// パーサを新規作成します。
     pub fn new(input: &'a str) -> Result<Self, String> {
         let mut lexer = Lexer::new(input);
         let first_token = lexer.next_token();
@@ -318,27 +264,29 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Advances to the next token.
     fn next_token(&mut self) {
         self.current_token = self.lexer.next_token();
+        // デバッグのために以下をコメント解除できます：
+        // println!("次のトークン: {:?}", self.current_token);
     }
 
-    /// Matches and consumes the current token if it matches the expected token.
-    fn match_token(&mut self, token: &Token) -> bool {
-        if let Some(ref current) = self.current_token {
-            if current == token {
+    fn expect_keyword(&mut self, keyword: &str) -> Result<(), String> {
+        if let Some(Token::Keyword(ref kw)) = self.current_token {
+            if kw.eq_ignore_ascii_case(keyword) {
                 self.next_token();
-                true
+                Ok(())
             } else {
-                false
+                Err(format!(
+                    "キーワード '{}' を期待しましたが、'{}' が見つかりました",
+                    keyword, kw
+                ))
             }
         } else {
-            false
+            Err(format!("キーワード '{}' を期待しました", keyword))
         }
     }
 
-    /// Matches and consumes a keyword.
-    fn match_keyword(&mut self, keyword: &str) -> bool {
+    fn consume_keyword(&mut self, keyword: &str) -> bool {
         if let Some(Token::Keyword(ref kw)) = self.current_token {
             if kw.eq_ignore_ascii_case(keyword) {
                 self.next_token();
@@ -351,214 +299,319 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parses the entire query.
-    pub fn parse(&mut self) -> Result<Query, String> {
-        match self.current_token {
-            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INSERT") => {
-                self.parse_insert()
+    fn consume_keywords(&mut self, keywords: &[&str]) -> bool {
+        let original_token = self.current_token.clone();
+        for &keyword in keywords {
+            if !self.consume_keyword(keyword) {
+                self.current_token = original_token.clone();
+                return false;
             }
-            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("SELECT") => {
-                self.parse_select()
-            }
-            _ => Err("Unsupported query type.".to_string()),
+        }
+        true
+    }
+
+    fn peek_keyword(&self, keyword: &str) -> bool {
+        if let Some(Token::Keyword(ref kw)) = self.current_token {
+            kw.eq_ignore_ascii_case(keyword)
+        } else {
+            false
         }
     }
 
-    /// Parses an INSERT statement.
-    fn parse_insert(&mut self) -> Result<Query, String> {
-        // Consume 'INSERT'
-        if !self.match_keyword("INSERT") {
-            return Err("Expected 'INSERT' keyword.".to_string());
-        }
-
-        // Consume 'INTO'
-        if !self.match_keyword("INTO") {
-            return Err("Expected 'INTO' keyword.".to_string());
-        }
-
-        // Parse table name
-        let table = if let Some(Token::Identifier(ref name)) = self.current_token {
-            let table_name = name.clone();
-            self.next_token();
-            table_name
+    fn expect_token(&mut self, expected: &Token) -> Result<(), String> {
+        if let Some(ref current) = self.current_token {
+            if current == expected {
+                self.next_token();
+                Ok(())
+            } else {
+                Err(format!(
+                    "トークン '{:?}' を期待しましたが、'{:?}' が見つかりました",
+                    expected, current
+                ))
+            }
         } else {
-            return Err("Expected table name.".to_string());
-        };
-
-        // Consume '('
-        if !self.match_token(&Token::LeftParen) {
-            return Err("Expected '('.".to_string());
+            Err(format!(
+                "トークン '{:?}' を期待しましたが、EOFに到達しました",
+                expected
+            ))
         }
+    }
 
-        // Parse column names
+    fn consume_token(&mut self, expected: &Token) -> bool {
+        if let Some(ref current) = self.current_token {
+            if current == expected {
+                self.next_token();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// クエリ全体をパースします。
+    pub fn parse(&mut self) -> Result<Query, String> {
+        if self.peek_keyword("SELECT") {
+            self.parse_select()
+        } else if self.peek_keyword("INSERT") {
+            self.parse_insert()
+        } else {
+            Err("サポートされていないクエリタイプです".to_string())
+        }
+    }
+
+    /// INSERT文をパースします。
+    fn parse_insert(&mut self) -> Result<Query, String> {
+        self.expect_keyword("INSERT")?;
+        self.expect_keyword("INTO")?;
+        let table = self.parse_table()?;
+
+        self.expect_token(&Token::LeftParen)?;
         let mut columns = Vec::new();
         loop {
             if let Some(Token::Identifier(ref col)) = self.current_token {
                 columns.push(col.clone());
                 self.next_token();
             } else {
-                return Err("Expected column name.".to_string());
+                return Err("カラム名を期待しました".to_string());
             }
 
-            if self.match_token(&Token::Comma) {
-                continue;
-            } else if self.match_token(&Token::RightParen) {
+            if !self.consume_token(&Token::Comma) {
                 break;
-            } else {
-                return Err("Expected ',' or ')'.".to_string());
             }
         }
+        self.expect_token(&Token::RightParen)?;
 
-        // Consume 'VALUES'
-        if !self.match_keyword("VALUES") {
-            return Err("Expected 'VALUES' keyword.".to_string());
-        }
+        // 'VALUES' または 'SELECT' のチェック
+        if self.consume_keyword("VALUES") {
+            self.expect_token(&Token::LeftParen)?;
+            let mut values = Vec::new();
+            loop {
+                let value = self.parse_value()?;
+                values.push(value);
 
-        // Consume '('
-        if !self.match_token(&Token::LeftParen) {
-            return Err("Expected '('.".to_string());
-        }
-
-        // Parse values
-        let mut values = Vec::new();
-        loop {
-            self.consume_whitespace_and_comments();
-
-            let value = self.parse_value()?;
-
-            values.push(value);
-
-            self.consume_whitespace_and_comments();
-
-            if self.match_token(&Token::Comma) {
-                continue;
-            } else if self.match_token(&Token::RightParen) {
-                break;
-            } else {
-                return Err("Expected ',' or ')'.".to_string());
+                if !self.consume_token(&Token::Comma) {
+                    break;
+                }
             }
+            self.expect_token(&Token::RightParen)?;
+
+            Ok(Query::Insert(Insert {
+                table,
+                columns,
+                values: Some(values),
+                select: None,
+            }))
+        } else if self.peek_keyword("SELECT") {
+            // INSERT INTO ... SELECT ... のパース
+            let select = self.parse_select_inner()?;
+            Ok(Query::Insert(Insert {
+                table,
+                columns,
+                values: None,
+                select: Some(Box::new(select)),
+            }))
+        } else {
+            Err("カラムの後に 'VALUES' もしくは 'SELECT' が必要です".to_string())
         }
-
-        // Consume optional ';'
-        self.match_token(&Token::SemiColon);
-
-        Ok(Query::Insert(Insert {
-            table,
-            columns,
-            values,
-        }))
     }
 
-    /// Parses a SELECT statement.
+    /// SELECT文をパースし、`Query::Select` にラップします。
     fn parse_select(&mut self) -> Result<Query, String> {
-        // Consume 'SELECT'
-        if !self.match_keyword("SELECT") {
-            return Err("Expected 'SELECT' keyword.".to_string());
-        }
+        let select = self.parse_select_inner()?;
+        Ok(Query::Select(select))
+    }
 
-        // Parse column list
+    /// SELECT文を内部的にパースする関数
+    fn parse_select_inner(&mut self) -> Result<Select, String> {
+        self.expect_keyword("SELECT")?;
         let mut columns = Vec::new();
         loop {
-            match &self.current_token {
-                Some(Token::Star) => {
-                    columns.push("*".to_string());
-                    self.next_token();
-                }
-                Some(Token::Identifier(ident)) => {
-                    columns.push(ident.clone());
-                    self.next_token();
-                }
-                _ => return Err("Expected '*' or column name.".to_string()),
-            }
-
-            if self.match_token(&Token::Comma) {
-                continue;
-            } else {
+            columns.push(self.parse_expression()?);
+            if !self.consume_token(&Token::Comma) {
                 break;
             }
         }
 
-        // Consume 'FROM'
-        if !self.match_keyword("FROM") {
-            return Err("Expected 'FROM' keyword.".to_string());
-        }
+        self.expect_keyword("FROM")?;
+        let (table, joins) = self.parse_table_with_joins()?;
 
-        // Parse table name
-        let table = if let Some(Token::Identifier(ref name)) = self.current_token {
-            let table_name = name.clone();
-            self.next_token();
-            table_name
-        } else {
-            return Err("Expected table name.".to_string());
-        };
-
-        // Optional 'WHERE' clause
-        let where_clause = if self.match_keyword("WHERE") {
-            Some(self.parse_expression()?)
+        let where_clause = if self.consume_keyword("WHERE") {
+            Some(self.parse_logical_expression()?)
         } else {
             None
         };
 
-        // Consume optional ';'
-        self.match_token(&Token::SemiColon);
+        let group_by = if self.consume_keywords(&["GROUP", "BY"]) {
+            Some(self.parse_group_by_clause()?)
+        } else {
+            None
+        };
 
-        Ok(Query::Select(Select {
+        let having = if self.consume_keyword("HAVING") {
+            Some(self.parse_logical_expression()?)
+        } else {
+            None
+        };
+
+        let order_by = if self.consume_keywords(&["ORDER", "BY"]) {
+            Some(self.parse_order_by_clause()?)
+        } else {
+            None
+        };
+
+        Ok(Select {
             columns,
             table,
+            joins,
             where_clause,
-        }))
-    }
-
-    /// Parses an expression for the WHERE clause.
-    fn parse_expression(&mut self) -> Result<Expression, String> {
-        let left = match self.current_token.clone() {
-            Some(Token::Identifier(ident)) => {
-                self.next_token();
-                ident
-            }
-            _ => return Err("Expected identifier.".to_string()),
-        };
-
-        // Parse operator
-        let operator = match self.current_token.clone() {
-            Some(Token::Equal) => {
-                self.next_token();
-                "=".to_string()
-            }
-            Some(Token::NotEqual) => {
-                self.next_token();
-                "!=".to_string()
-            }
-            Some(Token::LessThan) => {
-                self.next_token();
-                "<".to_string()
-            }
-            Some(Token::LessThanOrEqual) => {
-                self.next_token();
-                "<=".to_string()
-            }
-            Some(Token::GreaterThan) => {
-                self.next_token();
-                ">".to_string()
-            }
-            Some(Token::GreaterThanOrEqual) => {
-                self.next_token();
-                ">=".to_string()
-            }
-            _ => return Err("Expected comparison operator.".to_string()),
-        };
-
-        // Parse right-hand side value
-        let right = self.parse_value()?;
-
-        Ok(Expression::Binary {
-            left,
-            operator,
-            right,
+            group_by,
+            having,
+            order_by,
         })
     }
 
-    /// Parses a value used in expressions.
+    fn parse_table_with_joins(&mut self) -> Result<(Table, Vec<Join>), String> {
+        let table = self.parse_table()?;
+        let mut joins = Vec::new();
+        while self.peek_keyword("JOIN") {
+            let join = self.parse_join_clause()?;
+            joins.push(join);
+        }
+        Ok((table, joins))
+    }
+
+    fn parse_table(&mut self) -> Result<Table, String> {
+        if let Some(Token::Identifier(ref name)) = self.current_token {
+            let table = Table { name: name.clone() };
+            self.next_token();
+            Ok(table)
+        } else {
+            Err("テーブル名を期待しました".to_string())
+        }
+    }
+
+    fn parse_join_clause(&mut self) -> Result<Join, String> {
+        self.expect_keyword("JOIN")?;
+        let table = self.parse_table()?;
+        let condition = if self.consume_keyword("ON") {
+            Some(self.parse_logical_expression()?)
+        } else {
+            None
+        };
+        Ok(Join { table, condition })
+    }
+
+    fn parse_logical_expression(&mut self) -> Result<Expression, String> {
+        self.parse_or_expression()
+    }
+
+    fn parse_or_expression(&mut self) -> Result<Expression, String> {
+        let mut expr = self.parse_and_expression()?;
+        while self.consume_keyword("OR") {
+            let right = self.parse_and_expression()?;
+            expr = Expression::Or(Box::new(expr), Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    fn parse_and_expression(&mut self) -> Result<Expression, String> {
+        let mut expr = self.parse_not_expression()?;
+        while self.consume_keyword("AND") {
+            let right = self.parse_not_expression()?;
+            expr = Expression::And(Box::new(expr), Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    fn parse_not_expression(&mut self) -> Result<Expression, String> {
+        if self.consume_keyword("NOT") {
+            let expr = self.parse_primary_expression()?;
+            Ok(Expression::Not(Box::new(expr)))
+        } else {
+            self.parse_primary_expression()
+        }
+    }
+
+    fn parse_primary_expression(&mut self) -> Result<Expression, String> {
+        if self.consume_token(&Token::LeftParen) {
+            let expr = self.parse_logical_expression()?;
+            self.expect_token(&Token::RightParen)?;
+            Ok(expr)
+        } else {
+            self.parse_comparison_expression()
+        }
+    }
+
+    fn parse_comparison_expression(&mut self) -> Result<Expression, String> {
+        let left = self.parse_term()?;
+        if let Some(op) = self.current_token.clone() {
+            let operator = match op {
+                Token::Equal => Some(BinaryOperator::Equal),
+                Token::NotEqual => Some(BinaryOperator::NotEqual),
+                Token::LessThan => Some(BinaryOperator::LessThan),
+                Token::LessThanOrEqual => Some(BinaryOperator::LessThanOrEqual),
+                Token::GreaterThan => Some(BinaryOperator::GreaterThan),
+                Token::GreaterThanOrEqual => Some(BinaryOperator::GreaterThanOrEqual),
+                _ => None,
+            };
+
+            if let Some(op) = operator {
+                self.next_token();
+                let right = self.parse_term()?;
+                Ok(Expression::Binary {
+                    left: Box::new(left),
+                    operator: op,
+                    right: Box::new(right),
+                })
+            } else {
+                Ok(left)
+            }
+        } else {
+            Ok(left)
+        }
+    }
+
+    fn parse_group_by_clause(&mut self) -> Result<Vec<Expression>, String> {
+        let mut expressions = Vec::new();
+        loop {
+            expressions.push(self.parse_expression()?);
+            if !self.consume_token(&Token::Comma) {
+                break;
+            }
+        }
+        Ok(expressions)
+    }
+
+    fn parse_order_by_clause(&mut self) -> Result<Vec<Ordering>, String> {
+        let mut orderings = Vec::new();
+        loop {
+            let expr = self.parse_expression()?;
+            let direction = if self.consume_keyword("ASC") {
+                SortOrder::Ascending
+            } else if self.consume_keyword("DESC") {
+                SortOrder::Descending
+            } else {
+                SortOrder::Ascending
+            };
+            orderings.push(Ordering {
+                expression: expr,
+                direction,
+            });
+            if !self.consume_token(&Token::Comma) {
+                break;
+            }
+        }
+        Ok(orderings)
+    }
+
+    /// WHERE句やHAVING句の論理式をパースします。
+    fn parse_expression(&mut self) -> Result<Expression, String> {
+        self.parse_logical_expression()
+    }
+
+    /// 値をパースします。
     fn parse_value(&mut self) -> Result<Value, String> {
         match self.current_token.clone() {
             Some(Token::Integer(i)) => {
@@ -569,9 +622,9 @@ impl<'a> Parser<'a> {
                 self.next_token();
                 Ok(Value::Float(f))
             }
-            Some(Token::StringLiteral(s)) => {
+            Some(Token::StringLiteral(ref s)) => {
                 self.next_token();
-                Ok(Value::Text(s))
+                Ok(Value::Text(s.clone()))
             }
             Some(Token::Null) => {
                 self.next_token();
@@ -581,52 +634,65 @@ impl<'a> Parser<'a> {
                 self.next_token();
                 Ok(Value::Boolean(b))
             }
-            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("DATE") => {
-                self.next_token();
-                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                    self.next_token();
-                    Ok(Value::Date(s))
-                } else {
-                    Err("Failed to parse 'DATE' literal.".to_string())
-                }
-            }
-            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIME") => {
-                self.next_token();
-                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                    self.next_token();
-                    Ok(Value::Time(s))
-                } else {
-                    Err("Failed to parse 'TIME' literal.".to_string())
-                }
-            }
-            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("TIMESTAMP") => {
-                self.next_token();
-                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                    self.next_token();
-                    Ok(Value::Timestamp(s))
-                } else {
-                    Err("Failed to parse 'TIMESTAMP' literal.".to_string())
-                }
-            }
-            Some(Token::Keyword(ref kw)) if kw.eq_ignore_ascii_case("INTERVAL") => {
-                self.next_token();
-                if let Some(Token::StringLiteral(s)) = self.current_token.clone() {
-                    self.next_token();
-                    Ok(Value::Interval(s))
-                } else {
-                    Err("Failed to parse 'INTERVAL' literal.".to_string())
-                }
-            }
-            Some(Token::Illegal(s)) => Err(format!("Illegal token encountered: {}", s)),
-            _ => Err("Failed to parse value.".to_string()),
+            _ => Err("予期しない値のトークンです".to_string()),
         }
     }
 
-    /// Consumes any whitespace and comments.
-    fn consume_whitespace_and_comments(&mut self) {
-        while let Some(Token::Whitespace(_)) = self.current_token {
-            self.next_token();
+    /// 識別子や関数呼び出し、定数などの項をパースします。
+    fn parse_term(&mut self) -> Result<Expression, String> {
+        match self.current_token.clone() {
+            Some(Token::Identifier(ref name)) => {
+                let identifier = name.clone();
+                self.next_token();
+                if self.consume_token(&Token::Dot) {
+                    if let Some(Token::Identifier(ref field)) = self.current_token {
+                        let field_name = format!("{}.{}", identifier, field);
+                        self.next_token();
+                        Ok(Expression::Identifier(field_name))
+                    } else {
+                        Err("フィールド名を期待しました".to_string())
+                    }
+                } else if self.consume_token(&Token::LeftParen) {
+                    // 関数呼び出し
+                    let mut args = Vec::new();
+                    if !self.consume_token(&Token::RightParen) {
+                        loop {
+                            let expr = self.parse_expression()?;
+                            args.push(expr);
+                            if self.consume_token(&Token::Comma) {
+                                continue;
+                            } else {
+                                self.expect_token(&Token::RightParen)?;
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Expression::Function(identifier, args))
+                } else {
+                    Ok(Expression::Identifier(identifier))
+                }
+            }
+            Some(Token::Integer(i)) => {
+                self.next_token();
+                Ok(Expression::Integer(i))
+            }
+            Some(Token::Float(f)) => {
+                self.next_token();
+                Ok(Expression::Float(f))
+            }
+            Some(Token::StringLiteral(ref s)) => {
+                self.next_token();
+                Ok(Expression::Text(s.clone()))
+            }
+            Some(Token::Null) => {
+                self.next_token();
+                Ok(Expression::Identifier("NULL".to_string()))
+            }
+            Some(Token::Boolean(b)) => {
+                self.next_token();
+                Ok(Expression::Boolean(b))
+            }
+            _ => Err("予期しない項のトークンです".to_string()),
         }
-        // Add comment handling if necessary
     }
 }
