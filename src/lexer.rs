@@ -67,6 +67,10 @@ impl<'a> Lexer<'a> {
                     Some(Token::GreaterThan)
                 }
             }
+            Some('*') => {
+                self.read_char();
+                Some(Token::Asterisk)
+            }
             Some(',') => {
                 self.read_char();
                 Some(Token::Comma)

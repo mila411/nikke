@@ -437,6 +437,10 @@ impl<'a> Parser<'a> {
                 self.next_token();
                 Ok(Expression::Boolean(b))
             }
+            Some(Token::Asterisk) => {
+                self.next_token();
+                Ok(Expression::Asterisk)
+            }
             _ => Err("This is an unexpected token.".to_string()),
         }
     }

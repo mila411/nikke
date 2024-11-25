@@ -3,7 +3,8 @@
 use nikke::parser::Parser;
 
 fn main() {
-    let sql = "INSERT INTO table_name (column1, column2) SELECT column1, column2 FROM table1 JOIN table2 ON table1.id = table2.id WHERE condition GROUP BY column1 HAVING COUNT(column1) > 1 ORDER BY column2 DESC;";
+    // let sql = "INSERT INTO table_name (column1, column2) SELECT column1, column2 FROM table1 JOIN table2 ON table1.id = table2.id WHERE condition GROUP BY column1 HAVING COUNT(column1) > 1 ORDER BY column2 DESC;";
+    let sql = "SELECT * FROM table1;";
 
     match Parser::new(sql) {
         Ok(mut parser) => match parser.parse() {

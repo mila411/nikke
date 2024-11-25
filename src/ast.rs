@@ -9,6 +9,7 @@ pub enum Expression {
         right: Box<Expression>,
     },
     Identifier(String),
+    Asterisk,
     Integer(i64),
     Float(f64),
     Text(String),

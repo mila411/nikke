@@ -1,5 +1,6 @@
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
+    Asterisk,
     Identifier(String),
     Integer(i64),
     Float(f64),
